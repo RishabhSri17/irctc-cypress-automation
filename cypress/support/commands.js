@@ -7,23 +7,26 @@ import {
 const MANUAL_CAPTCHA = Cypress.env("MANUAL_CAPTCHA");
 
 Cypress.on("uncaught:exception", (err, runnable) => {
-    // returning false here prevents Cypress from
-    // failing the test
+    cy.task("log", `Uncaught exception: ${err.message}`);
     return false;
 });
 
 Cypress.Commands.add("submitCaptcha", () => {
+    cy.task("log", "Starting submitCaptcha command");
     let LOGGED_IN = false;
     performLogin(LOGGED_IN);
 });
 
 Cypress.Commands.add("solveCaptcha", () => {
+    cy.task("log", "Starting solveCaptcha command");
     solveCaptcha();
 });
 
 Cypress.Commands.add(
     "bookUntilTatkalGetsOpen",
     (div, TRAIN_COACH, TRAVEL_DATE, TRAIN_NO, TATKAL) => {
+        cy.task("log", `Starting booking attempt for Train ${TRAIN_NO}, Coach ${TRAIN_COACH}`);
+        cy.task("log", `Travel Date: ${TRAVEL_DATE}, Tatkal: ${TATKAL}`);
         BOOK_UNTIL_TATKAL_OPENS(
             div,
             TRAIN_COACH,
@@ -35,165 +38,151 @@ Cypress.Commands.add(
 );
 
 function performLogin(LOGGED_IN) {
-    // if starts
+    cy.task("log", `Attempting login. Current status: ${LOGGED_IN}`);
+    
     if (!LOGGED_IN) {
         cy.wait(500);
 
         cy.get("body")
             .should("be.visible")
             .then((el) => {
-                if (el[0].innerText.includes("Logout")) {
-                    cy.task(
-                        "log",
-                        "We have logged in successfully at this stage"
-                    );
+                const bodyText = el[0].innerText;
+                cy.task("log", `Current page state: ${bodyText.substring(0, 100)}...`);
+
+                if (bodyText.includes("Logout")) {
+                    cy.task("log", "Login successful - Logout button found");
                 } else if (
-                    el[0].innerText.includes("FORGOT ACCOUNT DETAILS") &&
-                    !el[0].innerText.includes("Please Wait...")
+                    bodyText.includes("FORGOT ACCOUNT DETAILS") &&
+                    !bodyText.includes("Please Wait...")
                 ) {
+                    cy.task("log", "On login page, attempting captcha");
+                    
                     if (MANUAL_CAPTCHA) {
+                        cy.task("log", "Manual captcha mode enabled");
                         cy.get("#captcha").focus();
-                        // wait for user to manually enter captcha and login
                         cy.get(".search_btn.loginText")
                             .should("include.text", "Logout")
                             .then(() => {
+                                cy.task("log", "Manual login successful");
                                 performLogin(true);
                             });
                     } else {
-                        // get captcha value base64 starts---------
+                        cy.task("log", "Attempting automatic captcha solve");
                         cy.get(".captcha-img")
                             .invoke("attr", "src")
                             .then((value) => {
-                                // api call to retrieve captcha value
-
+                                cy.task("log", "Sending captcha to solver");
                                 cy.exec(
                                     `python3 irctc-captcha-solver/app.py "${value}"`
                                 ).then((result) => {
+                                    cy.task("log", `Captcha solver returned: ${result.stdout}`);
                                     cy.get("#captcha")
                                         .clear()
                                         .type(result.stdout)
                                         .type("{enter}");
-                                    // cy.contains('SIGN IN').click()
 
                                     cy.get("body").then((el) => {
-                                        if (
-                                            el[0].innerText.includes(
-                                                "Invalid Captcha"
-                                            )
-                                        ) {
+                                        const responseText = el[0].innerText;
+                                        if (responseText.includes("Invalid Captcha")) {
+                                            cy.task("log", "Invalid captcha detected, retrying");
                                             performLogin(false);
-                                        } else if (
-                                            el[0].innerText.includes("Logout")
-                                        ) {
+                                        } else if (responseText.includes("Logout")) {
+                                            cy.task("log", "Automatic login successful");
                                             performLogin(true);
                                         } else {
+                                            cy.task("log", "Login failed, retrying");
                                             performLogin(false);
                                         }
                                     });
                                 });
-                                // api call to retrieve captcha value
                             });
-                        // get captcha value base64 ends---------
                     }
                 } else {
+                    cy.task("log", "Page not in expected state, retrying login");
                     performLogin(false);
                 }
             });
     }
-    // if ends
 }
 
 let MAX_ATTEMPT = 120;
-// function to solveCaptcha after logging in
 
 function solveCaptcha() {
-    // Max attempt for this function to fail
     MAX_ATTEMPT -= 1;
+    cy.task("log", `Captcha solve attempt ${120 - MAX_ATTEMPT} of 120`);
+    
     cy.wrap(MAX_ATTEMPT, { timeout: 10000 }).should("be.gt", 0);
-
-    // cy.task("log", `Calling solveCaptcha() ${MAX_ATTEMPT}th time`);
 
     cy.wait(500);
     cy.get("body")
         .should("be.visible")
         .then((el) => {
-            if (
-                el[0].innerText.includes(
-                    "Unable to process current transaction"
-                ) &&
-                el[0].innerText.includes("Payment Mode")
-            ) {
-                // cy.task("log", "Unable to process current transaction...");
+            const bodyText = el[0].innerText;
+            
+            if (bodyText.includes("Unable to process current transaction") && 
+                bodyText.includes("Payment Mode")) {
+                cy.task("log", "Transaction error detected, retrying search");
                 cy.get(".train_Search").click();
                 cy.wait(1000);
             }
 
-            if (el[0].innerText.includes("Sorry!!! Please Try again!!")) {
-                throw new Error(
-                    "Sorry!!! Please Try again!! <<< Thrown By IRCTC"
-                );
+            if (bodyText.includes("Sorry!!! Please Try again!!")) {
+                cy.task("log", "IRCTC error detected");
+                throw new Error("Sorry!!! Please Try again!! <<< Thrown By IRCTC");
             }
 
-            if (el[0].innerText.includes("Payment Methods")) {
-                // cy.task("log", "CAPTCHA .... SOLVED");
+            if (bodyText.includes("Payment Methods")) {
+                cy.task("log", "Captcha solved successfully");
                 return;
             }
 
-            if (el[0].innerText.includes("No seats available")) {
-                cy.fail(
-                    "Further execution stopped because there are no more tickets."
-                );
+            if (bodyText.includes("No seats available")) {
+                cy.task("log", "No seats available - stopping execution");
+                cy.fail("Further execution stopped because there are no more tickets.");
             }
 
-            // Check whether we are at reviewBooking stage or not if yes keep on solving captcha
-
-            if (
-                el[0].innerText.includes("Your ticket will be sent to") &&
-                !el[0].innerText.includes("Please Wait...") &&
-                el[0].innerHTML.includes("Enter Captcha")
-            ) {
+            if (bodyText.includes("Your ticket will be sent to") &&
+                !bodyText.includes("Please Wait...") &&
+                el[0].innerHTML.includes("Enter Captcha")) {
+                
                 if (MANUAL_CAPTCHA) {
+                    cy.task("log", "Waiting for manual captcha entry");
                     cy.get("#captcha").focus();
                     cy.get("body").then((el) => {
                         if (el[0].innerText.includes("Payment Methods")) {
-                            // cy.task("log", "Bypassed Captcha");
+                            cy.task("log", "Manual captcha solved successfully");
                         }
                     });
                 } else {
-                    // get captcha value base64 starts---------
+                    cy.task("log", "Attempting automatic captcha solve");
                     cy.get(".captcha-img")
                         .invoke("attr", "src")
                         .then((value) => {
-                            // api call to retrieve captcha value
                             cy.exec(
                                 `python3 irctc-captcha-solver/app.py "${value}"`
                             ).then((result) => {
+                                cy.task("log", `Captcha solver returned: ${result.stdout}`);
                                 cy.get("#captcha")
                                     .clear()
                                     .type(result.stdout)
                                     .type("{enter}");
                                 cy.get("body").then((el) => {
-                                    if (
-                                        el[0].innerText.includes(
-                                            "Payment Methods"
-                                        )
-                                    ) {
-                                        cy.task("log", "Bypassed Captcha");
+                                    if (el[0].innerText.includes("Payment Methods")) {
+                                        cy.task("log", "Automatic captcha solved successfully");
                                     } else {
+                                        cy.task("log", "Captcha solve failed, retrying");
                                         solveCaptcha();
                                     }
                                 });
                             });
-                            // api call to retrieve captcha value
                         });
-                    // get captcha value base64 ends---------
-
-                    // recursing until captcha gets solved
                     solveCaptcha();
                 }
-            } else if (el[0].innerText.includes("Payment Methods")) {
+            } else if (bodyText.includes("Payment Methods")) {
+                cy.task("log", "Payment page reached");
                 return;
             } else {
+                cy.task("log", "Page not in expected state, retrying captcha");
                 solveCaptcha();
             }
         });
@@ -206,12 +195,12 @@ function BOOK_UNTIL_TATKAL_OPENS(
     TRAIN_NO,
     TATKAL
 ) {
+    cy.task("log", `Checking Tatkal booking status for train ${TRAIN_NO}`);
     cy.wait(1900);
 
     if (TATKAL && !hasTatkalAlreadyOpened(TRAIN_COACH)) {
-        // wait for exact time
-        // cy.task("log", "Waiting for the exact time of opening of TATKAL...");
         const exactTimeToOpen = tatkalOpenTimeForToday(TRAIN_COACH);
+        cy.task("log", `Waiting for Tatkal opening time: ${exactTimeToOpen}`);
         cy.get("div.h_head1", { timeout: 300000 }).should(
             "include.text",
             exactTimeToOpen
@@ -221,51 +210,35 @@ function BOOK_UNTIL_TATKAL_OPENS(
     cy.get("body")
         .should("be.visible")
         .then((el) => {
-            if (
-                el[0].innerText.includes(
-                    "Booking not yet started for the selected quota and class"
-                ) &&
-                !el[0].innerText.includes("Please Wait...")
-            ) {
-                cy.get(
-                    ".level_1.hidden-xs > app-modify-search > .layer_2 > form.ng-untouched > .col-md-2 > .hidden-xs"
-                ).click();
+            const bodyText = el[0].innerText;
+            cy.task("log", `Current page state: ${bodyText.substring(0, 100)}...`);
 
-                // Another layer of protection from breaking up the code
-                // we again check the body are we at any loading phase as in loading phase content becomes visible but div
-                // not active to click it
-                // body fetch block starts............
+            if (bodyText.includes("Booking not yet started") &&
+                !bodyText.includes("Please Wait...")) {
+                cy.task("log", "Booking not started, retrying search");
+                cy.get(".level_1.hidden-xs > app-modify-search > .layer_2 > form.ng-untouched > .col-md-2 > .hidden-xs")
+                    .click();
+
                 cy.get("body")
                     .should("be.visible")
                     .then((el) => {
-                        if (
-                            el[0].innerText.includes(
-                                "Booking not yet started for the selected quota and class"
-                            ) &&
-                            !el[0].innerText.includes("Please Wait...")
-                        ) {
-                            // iterating each block div of available trains starts here.....
+                        if (el[0].innerText.includes("Booking not yet started") &&
+                            !el[0].innerText.includes("Please Wait...")) {
+                            cy.task("log", "Searching for matching train");
                             cy.get(":nth-child(n) > .bull-back")
                                 .should("be.visible")
                                 .each((div, index) => {
-                                    // confirming we click on same train no and seat class div
-                                    if (
-                                        div[0].innerText.includes(TRAIN_NO) &&
-                                        div[0].innerText.includes(TRAIN_COACH)
-                                    ) {
-                                        console.log(index,"index no -<<<<<<<<<<<<<<<<<,")
+                                    if (div[0].innerText.includes(TRAIN_NO) &&
+                                        div[0].innerText.includes(TRAIN_COACH)) {
+                                        cy.task("log", `Found matching train at index ${index}`);
                                         cy.wrap(div)
                                             .contains(TRAIN_COACH)
                                             .click();
-                                        cy.get(
-                                            `:nth-child(n) > .bull-back > app-train-avl-enq > :nth-child(1) > :nth-child(7) > :nth-child(1)`
-                                        )
+                                        cy.get(`:nth-child(n) > .bull-back > app-train-avl-enq > :nth-child(1) > :nth-child(7) > :nth-child(1)`)
                                             .contains(formatDate(TRAVEL_DATE))
                                             .click();
-                                        cy.get(
-                                            `:nth-child(n) > .bull-back > app-train-avl-enq > [style="padding-top: 10px; padding-bottom: 20px;"]`
-                                        )
-                                        // :nth-child(8) > .form-group > app-train-avl-enq > [style="padding-top: 10px; padding-bottom: 20px;"] > [style="overflow-x: auto;"] > .pull-left > :nth-child(1) > .train_Search
+                                        cy.task("log", "Clicking Book Now");
+                                        cy.get(`:nth-child(n) > .bull-back > app-train-avl-enq > [style="padding-top: 10px; padding-bottom: 20px;"]`)
                                             .contains("Book Now")
                                             .click();
                                         BOOK_UNTIL_TATKAL_OPENS(
@@ -277,8 +250,8 @@ function BOOK_UNTIL_TATKAL_OPENS(
                                         );
                                     }
                                 });
-                            // iterating each block div of available trains ends here.....
                         } else {
+                            cy.task("log", "Page state changed, retrying booking process");
                             BOOK_UNTIL_TATKAL_OPENS(
                                 div,
                                 TRAIN_COACH,
@@ -288,51 +261,33 @@ function BOOK_UNTIL_TATKAL_OPENS(
                             );
                         }
                     });
-                // body fetch block ends............
-            } else if (
-                el[0].innerText.includes("Passenger Details") &&
-                el[0].innerText.includes("Contact Details") &&
-                !el[0].innerText.includes("Please Wait...")
-            ) {
-                cy.task(
-                    "log",
-                    "TATKAL BOOKING NOW OPEN....STARTING FURTHER PROCESS"
-                );
-            } else if (
-                !el[0].innerText.includes("Passenger Details") &&
-                !el[0].innerText.includes("Contact Details") &&
-                !el[0].innerText.includes("Please Wait...")
-            ) {
+            } else if (bodyText.includes("Passenger Details") &&
+                      bodyText.includes("Contact Details") &&
+                      !bodyText.includes("Please Wait...")) {
+                cy.task("log", "Successfully reached passenger details page");
+            } else if (!bodyText.includes("Passenger Details") &&
+                      !bodyText.includes("Contact Details") &&
+                      !bodyText.includes("Please Wait...")) {
+                cy.task("log", "Searching for train to book");
                 cy.get("body").then((el) => {
-                    // iterating each block div of available trains starts here.....
                     cy.get(":nth-child(n) > .bull-back").each((div, index) => {
-                        // confirming we click on same train no and seat class div
-                        if (
-                            div[0].innerText.includes(TRAIN_NO) &&
-                            div[0].innerText.includes(TRAIN_COACH)
-                        ) {
+                        if (div[0].innerText.includes(TRAIN_NO) &&
+                            div[0].innerText.includes(TRAIN_COACH)) {
+                            cy.task("log", `Found matching train at index ${index}`);
                             cy.wrap(div).contains(TRAIN_COACH).click();
-                            cy.get(
-                                `:nth-child(n) > .bull-back > app-train-avl-enq > :nth-child(1) > :nth-child(7) > :nth-child(1)`
-                            )
+                            cy.get(`:nth-child(n) > .bull-back > app-train-avl-enq > :nth-child(1) > :nth-child(7) > :nth-child(1)`)
                                 .contains(formatDate(TRAVEL_DATE))
                                 .click();
-                            cy.get(
-                                `:nth-child(n) > .bull-back > app-train-avl-enq > [style="padding-top: 10px; padding-bottom: 20px;"]`
-                            ).then((elements) => {
-                                elements.each((i, el) => {
-                                  // Check if the div contains the ₹ symbol
-                                  if (el.innerText.includes("₹")) {
-                                    console.log(`Found ₹ in Div ${i + 1}:`, el.innerText); // Log the matching div
-                                    // Click the "Book Now" button inside this div
-                                    cy.wrap(el).contains("Book Now").click();
-                                  }
+                            cy.task("log", "Checking for booking options");
+                            cy.get(`:nth-child(n) > .bull-back > app-train-avl-enq > [style="padding-top: 10px; padding-bottom: 20px;"]`)
+                                .then((elements) => {
+                                    elements.each((i, el) => {
+                                        if (el.innerText.includes("₹")) {
+                                            cy.task("log", `Found bookable option in div ${i + 1}`);
+                                            cy.wrap(el).contains("Book Now").click();
+                                        }
+                                    });
                                 });
-                            });
-                            // .contains("Book Now")
-                            // .should('be.visible') // Ensure it's visible
-                            // .and('not.be.disabled') // Ensure it's not disabled
-                            // .click();
                             BOOK_UNTIL_TATKAL_OPENS(
                                 div,
                                 TRAIN_COACH,
@@ -342,10 +297,9 @@ function BOOK_UNTIL_TATKAL_OPENS(
                             );
                         }
                     });
-                    // iterating each block div of available trains ends here.....
                 });
-                // body fetch block ends............
             } else {
+                cy.task("log", "Page in transition, retrying booking process");
                 BOOK_UNTIL_TATKAL_OPENS(
                     div,
                     TRAIN_COACH,
